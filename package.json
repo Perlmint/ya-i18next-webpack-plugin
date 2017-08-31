@@ -1,0 +1,40 @@
+{
+  "name": "ya-i18next-webpack-plugin",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "typings": "index.d.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Perlmint/ya-i18next-webpack-plugin.git"
+  },
+  "keywords": [
+    "i18next",
+    "webpack",
+    "plugin",
+    "i18n"
+  ],
+  "author": "Gyusun Yeom <omniavinco@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Perlmint/ya-i18next-webpack-plugin/issues"
+  },
+  "homepage": "https://github.com/Perlmint/ya-i18next-webpack-plugin#readme",
+  "devDependencies": {
+    "@types/i18next": "^8.4.2",
+    "@types/i18next-node-fs-backend": "0.0.29",
+    "@types/lodash": "^4.14.74",
+    "@types/node": "^8.0.26",
+    "@types/webpack": "^3.0.10",
+    "typescript": "^2.4.2"
+  },
+  "dependencies": {
+    "i18next": "^9.0.0",
+    "i18next-node-fs-backend": "^1.0.0",
+    "lodash": "^4.17.4",
+    "virtual-module-webpack-plugin": "^0.3.0"
+  }
+}

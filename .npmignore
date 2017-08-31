@@ -1,0 +1,12 @@
+*.ts
+!*.d.ts
+*.js.map
+
+.gitignore
+.npmignore
+
+node_modules
+
+tsconfig.json
+
+*.tgz
