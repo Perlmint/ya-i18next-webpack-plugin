@@ -1,0 +1,1 @@
+# ya-i18next-webpack-plugin
