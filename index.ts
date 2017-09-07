@@ -88,11 +88,25 @@ function getPath(template: string, language?: string, namespace?: string) {
     return template;
 }
 
+export type CollectedKeys = {[language: string]: {[namespace: string]: {[key: string]: string[]}}};
+
+function removeMap<T>(obj: _.Dictionary<T>, keys: (string | undefined)[]) {
+    for (const emptyKey of keys) {
+        if (emptyKey !== undefined) {
+            delete obj[emptyKey];
+        }
+    }
+
+    return obj;
+}
+
 export default class I18nextPlugin {
     protected compilation: wp.Compilation;
     protected option: InternalOption;
     protected context: string;
-    protected missingKeys: {[language: string]: {[namespace: string]: string[]}};
+    protected missingKeys: CollectedKeys = {};
+    protected startTime = Date.now();
+    protected prevTimestamps: {[file: string]: number} = {};
 
     public constructor(option: Option) {
         this.option = _.defaults(option, {
@@ -132,14 +146,29 @@ export default class I18nextPlugin {
 
         compiler.plugin("compilation", (compilation, data) => {
             // reset for new compliation
-            this.missingKeys = {};
-
             i18next.reloadResources(this.option.languages);
             this.compilation = compilation;
+            const changedFiles = _.keys(compilation.fileTimestamps).filter(
+                watchfile => (this.prevTimestamps[watchfile] || this.startTime) < (compilation.fileTimestamps[watchfile] || Infinity)
+            );
+
+            removeMap(this.missingKeys, _.map(this.missingKeys, (namespaces, lng) =>
+                _.size(removeMap(namespaces, _.map(namespaces, (values, ns) =>
+                    _.size(removeMap(values, _.map(values, (deps, key) => {
+                        _.remove(deps, dep => _.includes(changedFiles, dep));
+
+                        return deps.length === 0 ? key : undefined;
+                    }))) === 0 ? ns : undefined
+                ))) === 0 ? lng : undefined
+            ));
+
             data.normalModuleFactory.plugin(
                 "parser",
                 (parser: any) => {
-                    parser.plugin(`call ${this.option.functionName}`, this.onTranslateFunctionCall.bind(this));
+                    const that = this;
+                    parser.plugin(`call ${this.option.functionName}`, function(this: wp.Parser, arg: wp.Expression) {
+                        return I18nextPlugin.onTranslateFunctionCall.call(this, that, arg);
+                    });
                 }
             );
         });
@@ -149,6 +178,8 @@ export default class I18nextPlugin {
 
     protected async onEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
         // emit translation files
+        this.prevTimestamps = compilation.fileTimestamps;
+
         try {
             await Promise.all(_.map(this.option.languages, lng => {
                 const resourceTemplate = path.join(this.context, getPath(this.option.resourcePath, lng));
@@ -204,20 +235,20 @@ export default class I18nextPlugin {
                     }
                 }
 
-                return _.map(namespaces, async (keys, ns) => new Promise<void>(resolve => {
+                return _.map(namespaces, async (values, ns) => new Promise<void>(resolve => {
                     delete remains[lng][ns];
                     const missingPath = getPath(resourceTemplate, undefined, ns);
                     const stream = fs.createWriteStream(missingPath, {
                         defaultEncoding: "utf-8"
                     });
-                    keys = _.sortedUniq(_.sortBy(keys));
+                    const keys = _.sortedUniq(_.sortBy(_.keys(values)));
                     stream.write("{\n");
                     stream.write(_.map(keys, key => `\t"${key}": "${key}"`).join(",\n"));
                     stream.write("\n}");
 
                     stream.on("close", () => resolve());
 
-                    compilation.warnings.push(`missing translation ${keys.length} keys in ${lng}/${ns}`);
+                    compilation.warnings.push(`missing translation ${_.size(values)} keys in ${lng}/${ns}`);
                 }));
             }));
             // remove previous missings
@@ -235,27 +266,29 @@ export default class I18nextPlugin {
         }
     }
 
-    protected onTranslateFunctionCall(expr: any) {
-        const args = expr.arguments.map((arg: any) => extractArgs(arg, this.warningOnCompilation.bind(this)));
+    protected static onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
+        const args = expr.arguments.map((arg: any) => extractArgs(arg, plugin.warningOnCompilation.bind(plugin)));
 
-        for (const lng of this.option.languages) {
+        for (const lng of plugin.option.languages) {
             const keyOrKeys: string | string[] = args[0];
             const option: i18next.TranslationOptionsBase = Object.assign(_.defaults(args[1], {}), {
                 lng,
-                defaultValue: null
-            });
+                defaultValue: this.state.current.resource
+            } as i18next.TranslationOptionsBase);
             i18next.t(keyOrKeys, option);
         }
     }
 
-    protected onKeyMissing(lng: string, ns: string, key: string, __: string) {
-        const p = [lng, ns];
+    protected onKeyMissing(lng: string, ns: string, key: string, moduleName: string) {
+        const p = [lng, ns, key];
         let arr: string[] = _.get(this.missingKeys, p);
         if (arr === undefined) {
             _.set(this.missingKeys, p, []);
             arr = _.get(this.missingKeys, p);
         }
-        arr.push(key);
+        if (arr.indexOf(moduleName) === -1) {
+            arr.push(moduleName);
+        }
     }
 
     protected warningOnCompilation(msg: string) {
