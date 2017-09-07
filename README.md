@@ -47,3 +47,13 @@ if (window._t === undefined) {
 
 console.log(_t("hello_world"));
 ```
+
+## example missing keys
+
+```json
+{
+	"hello_world": [
+		"index.js(18,16)"
+	],
+}
+```
