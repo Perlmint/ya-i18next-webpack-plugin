@@ -28,6 +28,7 @@
     "@types/i18next-node-fs-backend": "0.0.29",
     "@types/lodash": "^4.14.74",
     "@types/node": "^8.0.26",
+    "@types/source-map": "^0.5.1",
     "@types/webpack": "^3.0.10",
     "typescript": "^2.4.2"
   },
@@ -35,6 +36,7 @@
     "i18next": "^9.0.0",
     "i18next-node-fs-backend": "^1.0.0",
     "lodash": "^4.17.4",
+    "source-map": "^0.5.7",
     "virtual-module-webpack-plugin": "^0.3.0"
   }
 }

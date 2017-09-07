@@ -5,6 +5,7 @@ import util = require('util');
 import _ = require("lodash");
 import i18next = require('i18next');
 import Backend = require('i18next-node-fs-backend');
+import { SourceMapConsumer } from 'source-map';
 const VirtualModulePlugin = require('virtual-module-webpack-plugin');
 
 const readFile = util.promisify(fs.readFile);
@@ -88,7 +89,7 @@ function getPath(template: string, language?: string, namespace?: string) {
     return template;
 }
 
-export type CollectedKeys = {[language: string]: {[namespace: string]: {[key: string]: string[]}}};
+export type CollectedKeys = {[language: string]: {[namespace: string]: {[key: string]: {[module: string]: [number, number]}}}};
 
 function removeMap<T>(obj: _.Dictionary<T>, keys: (string | undefined)[]) {
     for (const emptyKey of keys) {
@@ -107,6 +108,7 @@ export default class I18nextPlugin {
     protected missingKeys: CollectedKeys = {};
     protected startTime = Date.now();
     protected prevTimestamps: {[file: string]: number} = {};
+    protected sourceMaps: {[key: string]: SourceMapConsumer} = {};
 
     public constructor(option: Option) {
         this.option = _.defaults(option, {
@@ -152,14 +154,19 @@ export default class I18nextPlugin {
                 watchfile => (this.prevTimestamps[watchfile] || this.startTime) < (compilation.fileTimestamps[watchfile] || Infinity)
             );
 
+            for (const changed of changedFiles) {
+                delete this.sourceMaps[changed];
+            }
             removeMap(this.missingKeys, _.map(this.missingKeys, (namespaces, lng) =>
-                _.size(removeMap(namespaces, _.map(namespaces, (values, ns) =>
-                    _.size(removeMap(values, _.map(values, (deps, key) => {
-                        _.remove(deps, dep => _.includes(changedFiles, dep));
+                _.isEmpty(removeMap(namespaces, _.map(namespaces, (values, ns) =>
+                    _.isEmpty(removeMap(values, _.map(values, (deps, key) => {
+                        for (const changed of changedFiles) {
+                            delete deps[changed];
+                        }
 
-                        return deps.length === 0 ? key : undefined;
-                    }))) === 0 ? ns : undefined
-                ))) === 0 ? lng : undefined
+                        return _.isEmpty(deps) ? key : undefined;
+                    }))) ? ns : undefined
+                ))) ? lng : undefined
             ));
 
             data.normalModuleFactory.plugin(
@@ -243,7 +250,12 @@ export default class I18nextPlugin {
                     });
                     const keys = _.sortedUniq(_.sortBy(_.keys(values)));
                     stream.write("{\n");
-                    stream.write(_.map(keys, key => `\t"${key}": "${key}"`).join(",\n"));
+                    stream.write(_.map(
+                        keys,
+                        key => `\t"${key}": [\n${_.map(
+                            values[key], (pos, module) => `\t\t"${_.trim(JSON.stringify(path.relative(this.context, module)), '"')}(${pos})"`).join("\n")
+                        }\n\t]`).join(",\n")
+                    );
                     stream.end("\n}");
                     stream.on("close", () => resolve());
 
@@ -267,27 +279,32 @@ export default class I18nextPlugin {
 
     protected static onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
         const args = expr.arguments.map((arg: any) => extractArgs(arg, plugin.warningOnCompilation.bind(plugin)));
+        const resource = this.state.current.resource;
+        if (plugin.sourceMaps[resource] === undefined) {
+            plugin.sourceMaps[resource] = new SourceMapConsumer(this.state.current._source._sourceMap);
+        }
+        const sourceMap = plugin.sourceMaps[resource];
+        const startPos = sourceMap.originalPositionFor(expr.loc.start);
+        const pos = [resource, startPos.line, startPos.column];
 
         for (const lng of plugin.option.languages) {
             const keyOrKeys: string | string[] = args[0];
             const option: i18next.TranslationOptionsBase = Object.assign(_.defaults(args[1], {}), {
                 lng,
-                defaultValue: this.state.current.resource
+                defaultValue: pos
             } as i18next.TranslationOptionsBase);
             i18next.t(keyOrKeys, option);
         }
     }
 
-    protected onKeyMissing(lng: string, ns: string, key: string, moduleName: string) {
-        const p = [lng, ns, key];
-        let arr: string[] = _.get(this.missingKeys, p);
+    protected onKeyMissing(lng: string, ns: string, key: string, pos: [string, number, number]) {
+        const p = [lng, ns, key, pos[0]];
+        let arr: [number, number][] = _.get(this.missingKeys, p);
         if (arr === undefined) {
             _.set(this.missingKeys, p, []);
             arr = _.get(this.missingKeys, p);
         }
-        if (arr.indexOf(moduleName) === -1) {
-            arr.push(moduleName);
-        }
+        arr.push([pos[1], pos[2]]);
     }
 
     protected warningOnCompilation(msg: string) {
