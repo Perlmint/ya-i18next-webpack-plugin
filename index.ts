@@ -10,6 +10,7 @@ const VirtualModulePlugin = require('virtual-module-webpack-plugin');
 const readFile = util.promisify(fs.readFile);
 const unlink = util.promisify(fs.unlink);
 const stat = util.promisify(fs.stat);
+const mkdir = util.promisify(fs.mkdir);
 
 async function exists(path: fs.PathLike) {
     try {
@@ -191,10 +192,20 @@ export default class I18nextPlugin {
         ));
         try {
             // write missing
-            await Promise.all(_.map(this.missingKeys, async (namespaces, lng) =>
-                _.map(namespaces, async (keys, ns) => new Promise<void>(resolve => {
+            await Promise.all(_.map(this.missingKeys, async (namespaces, lng) => {
+                const resourceTemplate = path.join(this.context, getPath(this.option.pathToSaveMissing, lng));
+                const resourceDir = path.dirname(resourceTemplate);
+                try {
+                    await mkdir(resourceDir);
+                } catch (e) {
+                    if (e.code !== 'EEXIST') {
+                        throw e;
+                    }
+                }
+
+                return _.map(namespaces, async (keys, ns) => new Promise<void>(resolve => {
                     delete remains[lng][ns];
-                    const missingPath = path.join(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
+                    const missingPath = getPath(resourceTemplate, undefined, ns);
                     const stream = fs.createWriteStream(missingPath, {
                         defaultEncoding: "utf-8"
                     });
@@ -206,8 +217,8 @@ export default class I18nextPlugin {
                     stream.on("close", () => resolve());
 
                     compilation.warnings.push(`missing translation ${keys.length} keys in ${lng}/${ns}`);
-                }))
-            ));
+                }));
+            }));
             // remove previous missings
             await Promise.all(_.map(remains, async (namespaces, lng) =>
                 _.map(namespaces, async (__, ns) => {
