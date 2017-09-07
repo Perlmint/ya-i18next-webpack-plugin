@@ -244,8 +244,7 @@ export default class I18nextPlugin {
                     const keys = _.sortedUniq(_.sortBy(_.keys(values)));
                     stream.write("{\n");
                     stream.write(_.map(keys, key => `\t"${key}": "${key}"`).join(",\n"));
-                    stream.write("\n}");
-
+                    stream.end("\n}");
                     stream.on("close", () => resolve());
 
                     compilation.warnings.push(`missing translation ${_.size(values)} keys in ${lng}/${ns}`);
