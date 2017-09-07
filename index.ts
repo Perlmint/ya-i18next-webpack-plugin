@@ -188,14 +188,15 @@ export default class I18nextPlugin {
         this.prevTimestamps = compilation.fileTimestamps;
 
         try {
-            await Promise.all(_.map(this.option.languages, lng => {
+            await Promise.all(_.flatten(_.map(this.option.languages, async lng => {
                 const resourceTemplate = path.join(this.context, getPath(this.option.resourcePath, lng));
                 const resourceDir = path.dirname(resourceTemplate);
                 if (!exists(resourceDir)) {
                     compilation.missingDependencies.push(resourceDir);
+                    return [];
                 }
 
-                return _.map(this.option.namespaces, async ns => {
+                return Promise.all(_.map(this.option.namespaces, async ns => {
                     const resourcePath = getPath(resourceTemplate, undefined, ns);
                     const outPath = getPath(this.option.outPath, lng, ns);
 
@@ -211,8 +212,8 @@ export default class I18nextPlugin {
                         compilation.missingDependencies.push(resourcePath);
                         compilation.warnings.push(`Can't emit ${outPath}. It looks like ${resourcePath} is not exists.`);
                     }
-                });
-            }));
+                }));
+            })));
 
             callback();
         } catch (e) {
