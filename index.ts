@@ -147,38 +147,39 @@ export default class I18nextPlugin {
         compiler.plugin("after-emit", this.onAfterEmit.bind(this));
     }
 
-    protected onEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
+    protected async onEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
         // emit translation files
-        const promises: Promise<any>[] = [];
-
-        for (const lng of this.option.languages) {
-            const resourceTemplate = path.join(this.context, getPath(this.option.resourcePath, lng));
-            try {
+        try {
+            await Promise.all(_.map(this.option.languages, lng => {
+                const resourceTemplate = path.join(this.context, getPath(this.option.resourcePath, lng));
                 const resourceDir = path.dirname(resourceTemplate);
-                fs.statSync(resourceDir);
-                // compilation.contextDependencies.push(resourceDir);
-            } catch (e) {
+                if (!exists(resourceDir)) {
+                    compilation.missingDependencies.push(resourceDir);
+                }
 
-            }
+                return _.map(this.option.namespaces, async ns => {
+                    const resourcePath = getPath(resourceTemplate, undefined, ns);
+                    const outPath = getPath(this.option.outPath, lng, ns);
 
-            for (const ns of this.option.namespaces) {
-                const resourcePath = getPath(resourceTemplate, undefined, ns);
-                const outPath = getPath(this.option.outPath, lng, ns);
+                    try {
+                        const v = await readFile(resourcePath);
+                        compilation.assets[outPath] = {
+                            size() { return v.length; },
+                            source() { return v; }
+                        };
 
-                promises.push(readFile(resourcePath).then(v => {
-                    compilation.assets[outPath] = {
-                        size() { return v.length; },
-                        source() { return v; }
-                    };
+                        compilation.fileDependencies.push(path.resolve(resourcePath));
+                    } catch (e) {
+                        compilation.missingDependencies.push(resourcePath);
+                        compilation.warnings.push(`Can't emit ${outPath}. It looks like ${resourcePath} is not exists.`);
+                    }
+                });
+            }));
 
-                    compilation.fileDependencies.push(path.resolve(resourcePath));
-                }).catch(() => {
-                    compilation.warnings.push(`Can't emit ${outPath}. It looks like ${resourcePath} is not exists.`);
-                }));
-            }
+            callback();
+        } catch (e) {
+            callback(e);
         }
-
-        Promise.all(promises).then(() => callback()).catch(callback);
     }
 
     protected async onAfterEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
