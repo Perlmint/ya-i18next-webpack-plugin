@@ -8,6 +8,21 @@ import Backend = require('i18next-node-fs-backend');
 const VirtualModulePlugin = require('virtual-module-webpack-plugin');
 
 const readFile = util.promisify(fs.readFile);
+const unlink = util.promisify(fs.unlink);
+const stat = util.promisify(fs.stat);
+
+async function exists(path: fs.PathLike) {
+    try {
+        await stat(path);
+
+        return true;
+    } catch (e) {
+        if (e.code === 'ENOENT') {
+            return false;
+        }
+        throw e;
+    }
+}
 
 function extractArgs(arg: any, warning?: (msg: string) => void) {
     switch (arg.type) {
@@ -165,25 +180,47 @@ export default class I18nextPlugin {
         Promise.all(promises).then(() => callback()).catch(callback);
     }
 
-    protected onAfterEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
-        // write missing 
-        Promise.all(_.map(this.missingKeys, async (namespaces, lng) =>
-            _.map(namespaces, async (keys, ns) => new Promise<void>(resolve => {
-                const missingPath = path.join(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
-                const stream = fs.createWriteStream(missingPath, {
-                    defaultEncoding: "utf-8"
-                });
-                keys = _.sortedUniq(_.sortBy(keys));
-                console.log(keys);
-                stream.write("{\n");
-                stream.write(_.map(keys, key => `\t"${key}": "${key}"`).join(",\n"));
-                stream.write("\n}");
+    protected async onAfterEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
+        const remains: _.Dictionary<_.Dictionary<any>> = _.fromPairs(_.map(
+            this.option.languages, lng => [
+                lng,
+                _.fromPairs(_.map(
+                    this.option.namespaces, ns => [ns, null]
+                ))
+            ]
+        ));
+        try {
+            // write missing
+            await Promise.all(_.map(this.missingKeys, async (namespaces, lng) =>
+                _.map(namespaces, async (keys, ns) => new Promise<void>(resolve => {
+                    delete remains[lng][ns];
+                    const missingPath = path.join(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
+                    const stream = fs.createWriteStream(missingPath, {
+                        defaultEncoding: "utf-8"
+                    });
+                    keys = _.sortedUniq(_.sortBy(keys));
+                    stream.write("{\n");
+                    stream.write(_.map(keys, key => `\t"${key}": "${key}"`).join(",\n"));
+                    stream.write("\n}");
 
-                stream.on("close", () => resolve());
+                    stream.on("close", () => resolve());
 
-                compilation.warnings.push(`missing translation ${keys.length} keys in ${lng}/${ns}`);
-            }))
-        )).then(() => callback()).catch(callback);
+                    compilation.warnings.push(`missing translation ${keys.length} keys in ${lng}/${ns}`);
+                }))
+            ));
+            // remove previous missings
+            await Promise.all(_.map(remains, async (namespaces, lng) =>
+                _.map(namespaces, async (__, ns) => {
+                    const missingPath = path.join(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
+                    if (await exists(missingPath)) {
+                        await unlink(missingPath);
+                    }
+                })
+            ));
+            callback();
+        } catch (e) {
+            callback(e);
+        }
     }
 
     protected onTranslateFunctionCall(expr: any) {
