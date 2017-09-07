@@ -20,7 +20,7 @@ module.exports = {
             languages: ["en", "ko"],
             functionName: "_t",
             resourcePath: "./locales/{{lng}}/{{ns}}.json",
-            pathToSaveMissing: "./locales/{{lng}}/{{ns}}  -missing.json"
+            pathToSaveMissing: "./locales/{{lng}}/{{ns}}-missing.json"
         })
     ]
 };
