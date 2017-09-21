@@ -1,6 +1,7 @@
 *.ts
 !*.d.ts
 *.js.map
+src
 
 .gitignore
 .npmignore
