@@ -1,0 +1,11 @@
+{
+    "files.exclude": {
+        "**/.git": true,
+        "**/.DS_Store": true,
+        "*.js": true,
+        "*.js.map": true,
+        "index.d.ts": true,
+        "*.tgz": true,
+        "node_modules": true
+    }
+}
