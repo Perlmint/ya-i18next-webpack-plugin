@@ -1,8 +1,7 @@
-*.ts
-!*.d.ts
 *.js.map
 src
 
+.vscode
 .gitignore
 .npmignore
 
