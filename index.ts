@@ -2,9 +2,11 @@ import wp = require("webpack");
 import fs = require("fs");
 import path = require("path");
 import util = require('util');
+import readline = require('readline');
 import _ = require("lodash");
 import i18next = require('i18next');
 import Backend = require('i18next-node-fs-backend');
+import { ReadableStreamBuffer } from 'stream-buffers';
 import { SourceMapConsumer } from 'source-map';
 const VirtualModulePlugin = require('virtual-module-webpack-plugin');
 
@@ -26,7 +28,7 @@ async function exists(path: fs.PathLike) {
     }
 }
 
-function extractArgs(arg: any, warning?: (msg: string) => void) {
+function extractArgs(arg: any, warning?: (node: any) => void) {
     switch (arg.type) {
     case 'Literal':
         return arg.value;
@@ -40,7 +42,7 @@ function extractArgs(arg: any, warning?: (msg: string) => void) {
         return res;
     default:
         if (warning) {
-            warning(`unable to parse arg ${arg}`);
+            warning(arg);
         }
         return null;
     }
@@ -279,12 +281,45 @@ export default class I18nextPlugin {
     }
 
     protected static onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
-        const args = expr.arguments.map((arg: any) => extractArgs(arg, plugin.warningOnCompilation.bind(plugin)));
         const resource = this.state.current.resource;
         if (plugin.sourceMaps[resource] === undefined) {
             plugin.sourceMaps[resource] = new SourceMapConsumer(this.state.current._source._sourceMap);
         }
         const sourceMap = plugin.sourceMaps[resource];
+        const args = expr.arguments.map((arg: any) => extractArgs(arg, (arg) => {
+            const beginPos = sourceMap.originalPositionFor(arg.loc.start);
+            const endPos = sourceMap.originalPositionFor(arg.loc.end);
+            if (beginPos.source !== null) {
+                const originalSource = sourceMap.sourceContentFor(beginPos.source);
+                const sourceLines: string[] = [];
+                if (originalSource !== null) {
+                    const buffer = new ReadableStreamBuffer();
+                    buffer.put(originalSource);
+                    let lineIdx = 0;
+                    const lineInterface = readline.createInterface(buffer).on("line", (line: string) => {
+                        lineIdx++;
+                        let beginCol = 0, endCol = line.length;
+                        if (lineIdx === beginPos.line) {
+                            beginCol = beginPos.column as number;
+                        }
+                        if (lineIdx === endPos.line) {
+                            endCol = endPos.column as number;
+                        }
+                        if (lineIdx >= (beginPos.line as number) && lineIdx <= (endPos.line as number)) {
+                            sourceLines.push(line.substring(beginCol, endCol));
+                        }
+
+                        if (lineIdx === endPos.line) {
+                            lineInterface.close();
+                        }
+                    }).on("close", () => {
+                        plugin.warningOnCompilation(`unable to parse arg ${sourceLines.join("\n")} at ${resource}:(${beginPos.line}, ${beginPos.column})`);
+                    });
+                    return;
+                }
+            }
+            plugin.warningOnCompilation(`unable to parse node at ${resource}:(${beginPos.line}, ${beginPos.column})`);
+        }));
         const startPos = sourceMap.originalPositionFor(expr.loc.start);
         const pos = [resource, startPos.line, startPos.column];
 
