@@ -267,7 +267,7 @@ export default class I18nextPlugin {
                     delete remains[lng][ns];
                     const missingPath = getPath(resourceTemplate, undefined, ns);
                     const stream = fs.createWriteStream(missingPath, {
-                        defaultEncoding: "utf-8"
+                        encoding: "utf-8"
                     });
                     const keys = _.sortedUniq(_.sortBy(_.keys(values)));
                     stream.write("{\n");
