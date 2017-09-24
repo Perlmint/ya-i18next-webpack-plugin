@@ -208,7 +208,7 @@ export default class I18nextPlugin {
 
         try {
             await Promise.all(_.flatten(_.map(this.option.languages, async lng => {
-                const resourceTemplate = path.join(this.context, getPath(this.option.resourcePath, lng));
+                const resourceTemplate = path.resolve(this.context, getPath(this.option.resourcePath, lng));
                 const resourceDir = path.dirname(resourceTemplate);
                 if (!exists(resourceDir)) {
                     compilation.missingDependencies.push(resourceDir);
@@ -253,7 +253,7 @@ export default class I18nextPlugin {
             // write missing
             await this.initMissingDir();
             await Promise.all(_.map(this.missingKeys, async (namespaces, lng) => {
-                const resourceTemplate = path.join(this.context, getPath(this.option.pathToSaveMissing, lng));
+                const resourceTemplate = path.resolve(this.context, getPath(this.option.pathToSaveMissing, lng));
                 const resourceDir = path.dirname(resourceTemplate);
                 try {
                     await mkdir(resourceDir);
@@ -274,7 +274,7 @@ export default class I18nextPlugin {
                     stream.write(_.map(
                         keys,
                         key => `\t"${key}": [\n${_.map(
-                            values[key], (pos, module) => `\t\t"${_.trim(JSON.stringify(path.relative(this.context, module)), '"')}(${pos})"`).join("\n")
+                            values[key], (pos, module) => `\t\t"${_.trim(JSON.stringify(path.relative(this.context, module)), '"')}(${pos})"`).join(",\n")
                         }\n\t]`).join(",\n")
                     );
                     stream.end("\n}");
@@ -286,7 +286,7 @@ export default class I18nextPlugin {
             // remove previous missings
             await Promise.all(_.map(remains, async (namespaces, lng) =>
                 _.map(namespaces, async (__, ns) => {
-                    const missingPath = path.join(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
+                    const missingPath = path.resolve(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
                     if (await exists(missingPath)) {
                         await unlink(missingPath);
                     }
