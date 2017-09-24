@@ -1,0 +1,1 @@
+alert(_t("some" + window.location.hash));
