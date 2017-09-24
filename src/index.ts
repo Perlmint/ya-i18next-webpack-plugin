@@ -48,6 +48,49 @@ function extractArgs(arg: any, warning?: (node: any) => void) {
     }
 }
 
+class DummySourceMapConsumer implements sourceMap.SourceMapConsumer {
+    public file: string;
+    public sourceRoot: string;
+    public sources: string[];
+    public sourcesContent: string[];
+    public constructor(module: wp.Module) {
+        this.file = module.resource;
+        this.sourceRoot = module.resource;
+        this.sources = [this.file];
+        this.sourcesContent = [module._source._value];
+    }
+
+    computeColumnSpans() {}
+    originalPositionFor(generatedPosition: sourceMap.Position & { bias?: number }): sourceMap.NullableMappedPosition {
+        return _.assign({
+            source: this.file,
+            name: null
+        }, generatedPosition);
+    }
+    generatedPositionFor(originalPosition: sourceMap.MappedPosition & { bias?: number }): sourceMap.NullablePosition {
+        return _.assign({
+            lastColumn: originalPosition.column
+        }, originalPosition);
+    }
+    allGeneratedPositionsFor(originalPosition: sourceMap.MappedPosition): sourceMap.NullablePosition[] {
+        return [this.generatedPositionFor(originalPosition)];
+    }
+    hasContentsOfAllSources() { return true; }
+    sourceContentFor(source: string, returnNullOnMissing?: boolean): string | null {
+        const index = this.sources.indexOf(source);
+        if (index === -1) {
+            if (returnNullOnMissing) {
+                return null;
+            } else {
+                throw new Error("never");
+            }
+        }
+        return this.sourcesContent[index];
+    }
+    eachMapping(): void {
+    }
+}
+
 export interface Option {
     defaultLanguage: string;
     /**
@@ -305,22 +348,18 @@ export default class I18nextPlugin {
         }
     }
 
-    protected static onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
-        const resource = this.state.current.resource;
-        if (plugin.sourceMaps[resource] === undefined) {
-            plugin.sourceMaps[resource] = new SourceMapConsumer(this.state.current._source._sourceMap);
-        }
-        const sourceMap = plugin.sourceMaps[resource];
-        const args = expr.arguments.map((arg: any) => extractArgs(arg, (arg) => {
-            const beginPos = sourceMap.originalPositionFor(arg.loc.start);
-            const endPos = sourceMap.originalPositionFor(arg.loc.end);
-            if (beginPos.source !== null) {
-                const originalSource = sourceMap.sourceContentFor(beginPos.source);
-                const sourceLines: string[] = [];
-                if (originalSource !== null) {
-                    const buffer = new ReadableStreamBuffer();
-                    buffer.put(originalSource);
-                    let lineIdx = 0;
+    protected argsToSource(sourceMap: SourceMapConsumer, arg: wp.Expression): Promise<string | null> {
+        const beginPos = sourceMap.originalPositionFor(arg.loc.start);
+        const endPos = sourceMap.originalPositionFor(arg.loc.end);
+        if (beginPos.source !== null) {
+            const originalSource = sourceMap.sourceContentFor(beginPos.source);
+            const sourceLines: string[] = [];
+            if (originalSource !== null) {
+                const buffer = new ReadableStreamBuffer();
+                buffer.put(originalSource);
+                buffer.put("\n");
+                let lineIdx = 0;
+                return new Promise<string>(resolve => {
                     const lineInterface = readline.createInterface(buffer).on("line", (line: string) => {
                         lineIdx++;
                         let beginCol = 0, endCol = line.length;
@@ -338,14 +377,31 @@ export default class I18nextPlugin {
                             lineInterface.close();
                         }
                     }).on("close", () => {
-                        plugin.warningOnCompilation(`unable to parse arg ${sourceLines.join("\n")} at ${resource}:(${beginPos.line}, ${beginPos.column})`);
+                        resolve(sourceLines.join("\n"));
                     });
-                    return;
-                }
+                });
             }
-            plugin.warningOnCompilation(`unable to parse node at ${resource}:(${beginPos.line}, ${beginPos.column})`);
-        }));
-        const startPos = sourceMap.originalPositionFor(expr.loc.start);
+        }
+        return Promise.resolve(null);
+    }
+
+    protected static onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
+        const resource = this.state.current.resource;
+        if (plugin.sourceMaps[resource] === undefined && this.state.current._source._sourceMap !== undefined) {
+            plugin.sourceMaps[resource] = new SourceMapConsumer(this.state.current._source._sourceMap);
+        } else {
+            plugin.sourceMaps[resource] = new DummySourceMapConsumer(this.state.current);
+        }
+        const sourceMap = plugin.sourceMaps[resource];
+        const args = expr.arguments.map((arg: any) => extractArgs(arg, arg => plugin.argsToSource(sourceMap, arg).then(originalSource => {
+            const beginPos = sourceMap.originalPositionFor(arg.loc.start);
+            if (originalSource !== null) {
+                plugin.warningOnCompilation(`unable to parse arg ${originalSource} at ${resource}:(${beginPos.line}, ${beginPos.column})`);
+            } else {
+                plugin.warningOnCompilation(`unable to parse node at ${resource}:(${beginPos.line}, ${beginPos.column})`);
+            }
+        })));
+        const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(expr.loc.start) : expr.loc.start;
         const pos = [resource, startPos.line, startPos.column];
 
         for (const lng of plugin.option.languages) {
