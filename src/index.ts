@@ -111,6 +111,7 @@ export default class I18nextPlugin {
     protected startTime = Date.now();
     protected prevTimestamps: {[file: string]: number} = {};
     protected sourceMaps: {[key: string]: SourceMapConsumer} = {};
+    protected missingDirInitialized = false;
 
     public constructor(option: Option) {
         this.option = _.defaults(option, {
@@ -147,6 +148,7 @@ export default class I18nextPlugin {
             }
         });
         this.context = compiler.options.context || "";
+        this.initMissingDir();
 
         compiler.plugin("compilation", (compilation, data) => {
             // reset for new compliation
@@ -183,6 +185,21 @@ export default class I18nextPlugin {
         });
         compiler.plugin("emit", this.onEmit.bind(this));
         compiler.plugin("after-emit", this.onAfterEmit.bind(this));
+    }
+
+    protected async initMissingDir() {
+        if (this.missingDirInitialized) {
+            return;
+        }
+
+        const template = path.resolve(this.context, this.option.pathToSaveMissing);
+        await Promise.all(this.option.namespaces.map(ns => this.option.languages.map(async lng => {
+            const dirPath = path.dirname(getPath(template, lng, ns));
+            if (!await exists(dirPath)) {
+                await mkdir(dirPath);
+            }
+        })));
+        this.missingDirInitialized = true;
     }
 
     protected async onEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
@@ -234,6 +251,7 @@ export default class I18nextPlugin {
         ));
         try {
             // write missing
+            await this.initMissingDir();
             await Promise.all(_.map(this.missingKeys, async (namespaces, lng) => {
                 const resourceTemplate = path.join(this.context, getPath(this.option.pathToSaveMissing, lng));
                 const resourceDir = path.dirname(resourceTemplate);
