@@ -210,7 +210,7 @@ export default class I18nextPlugin {
             await Promise.all(_.flatten(_.map(this.option.languages, async lng => {
                 const resourceTemplate = path.resolve(this.context, getPath(this.option.resourcePath, lng));
                 const resourceDir = path.dirname(resourceTemplate);
-                if (!exists(resourceDir)) {
+                if (!await exists(resourceDir)) {
                     compilation.missingDependencies.push(resourceDir);
                     return [];
                 }
@@ -263,7 +263,7 @@ export default class I18nextPlugin {
                     }
                 }
 
-                return _.map(namespaces, async (values, ns) => new Promise<void>(resolve => {
+                return await Promise.all(_.map(namespaces, (values, ns) => new Promise<void>(resolve => {
                     delete remains[lng][ns];
                     const missingPath = getPath(resourceTemplate, undefined, ns);
                     const stream = fs.createWriteStream(missingPath, {
@@ -281,7 +281,7 @@ export default class I18nextPlugin {
                     stream.on("close", () => resolve());
 
                     compilation.warnings.push(`missing translation ${_.size(values)} keys in ${lng}/${ns}`);
-                }));
+                })));
             }));
             // remove previous missings
             await Promise.all(_.map(remains, (namespaces, lng) =>
