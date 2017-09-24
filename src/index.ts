@@ -284,13 +284,13 @@ export default class I18nextPlugin {
                 }));
             }));
             // remove previous missings
-            await Promise.all(_.map(remains, async (namespaces, lng) =>
-                _.map(namespaces, async (__, ns) => {
+            await Promise.all(_.map(remains, (namespaces, lng) =>
+                Promise.all(_.map(namespaces, async (__, ns) => {
                     const missingPath = path.resolve(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
                     if (await exists(missingPath)) {
                         await unlink(missingPath);
                     }
-                })
+                }))
             ));
             callback();
         } catch (e) {
