@@ -217,7 +217,7 @@ export default class I18nextPlugin {
 
                 return Promise.all(_.map(this.option.namespaces, async ns => {
                     const resourcePath = getPath(resourceTemplate, undefined, ns);
-                    const outPath = getPath(this.option.outPath, lng, ns);
+                    const outPath = getPath(this.outPath, lng, ns);
 
                     try {
                         const v = await readFile(resourcePath);
@@ -238,6 +238,13 @@ export default class I18nextPlugin {
         } catch (e) {
             callback(e);
         }
+    }
+
+    protected get outPath() {
+        if (path.isAbsolute(this.option.outPath)) {
+            return path.relative(this.context, this.option.outPath);
+        }
+        return this.option.outPath;
     }
 
     protected async onAfterEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
