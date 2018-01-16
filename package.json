@@ -6,7 +6,8 @@
   "typings": "index.d.ts",
   "scripts": {
     "build": "tsc -p src",
-    "test": "cross-env TS_NODE_PROJECT=test mocha --compilers ts:ts-node/register"
+    "test": "cross-env TS_NODE_PROJECT=test mocha --compilers ts:ts-node/register",
+    "prepublish": "npm test && npm run build"
   },
   "repository": {
     "type": "git",
