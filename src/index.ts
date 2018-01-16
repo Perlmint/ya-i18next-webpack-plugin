@@ -28,9 +28,14 @@ async function exists(path: fs.PathLike) {
     }
 }
 
+export interface Value {
+    key: string;
+    line: number;
+    column: number;
+}
 export interface Literal {
     type: "literal";
-    value: string[];
+    value: Value
 }
 export interface Identifier {
     type: "identifier";
@@ -48,7 +53,11 @@ export type Arg = Literal | Identifier | Candidates | Empty;
 function extractArgs(arg: any, warning?: (node: any) => void): Arg {
     switch (arg.type) {
     case 'Literal':
-        return { type: "literal", value: [arg.value] };
+        return { type: "literal", value: {
+            key: arg.value,
+            line: arg.loc.start.line,
+            column: arg.loc.start.column
+         } };
     case 'Identifier':
         return { type: "identifier", name: arg.name };
     case 'ObjectExpression':
@@ -426,9 +435,13 @@ export default class I18nextPlugin {
             }
         }));
         const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(expr.loc.start) : expr.loc.start;
-        const pos: [string, number, number] = [resource, startPos.line, startPos.column];
 
-        plugin.testArg(arg, pos);
+        for (const lng of plugin.option.languages) {
+            for (const failed of plugin.testArg(arg, lng,)) {
+                const [ns, k] = plugin.separateNamespace(failed.key);
+                plugin.addToMissingKey(lng, ns, k, [resource, failed.line, failed.column]);
+            }
+        }
     }
 
     protected separateNamespace(key: string) {
@@ -440,26 +453,26 @@ export default class I18nextPlugin {
         return ret;
     }
 
-    protected testArg(arg: Arg, pos: [string, number, number]) {
+    protected testArg(arg: Arg, lng: string) {
+        let faileds: Value[] = [];
         switch (arg.type) {
             case "empty":
                 break;
             case "candidates":
                 for (const key of arg.value) {
-                    this.testArg(key, pos);
+                    faileds.push(...this.testArg(key, lng));
                 }
                 break;
-            case "literal":
-                for (const lng of this.option.languages) {
-                    if (i18next.t(arg.value, { lng }) === false) {
-                        for (const key of arg.value) {
-                            const [ns, k] = this.separateNamespace(key);
-                            this.addToMissingKey(lng, ns, k, pos);
-                        }
                     }
                 }
                 break;
+            case "literal":
+                if (i18next.t(arg.value.key, { lng }) === false) {
+                    faileds.push(arg.value);
+                }
+                break;
         }
+        return faileds;
     }
 
     protected addToMissingKey(lng: string, ns: string, key: string, pos: [string, number, number]) {

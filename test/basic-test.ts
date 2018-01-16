@@ -107,7 +107,7 @@ describe('basic operation', () => {
         assert.equal(_.size(missings), 1, "Only one missing text here.");
         assert.isNotNull(missings["translated key"]);
         const pos = parsePos(missings["translated key"][0]);
-        assert.deepEqual(pos, { resource: "basic/simple.js", line: 3, column: 6 });
+        assert.deepEqual(pos, { resource: "basic/simple.js", line: 3, column: 9 });
     });
 
     it('complicated', async () => {
