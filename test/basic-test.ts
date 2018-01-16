@@ -137,4 +137,21 @@ describe('basic operation', () => {
         assert.equal(_.size(missings), 1, "Only one missing text here.");
         assert.isNotNull(missings["another key"]);
     });
+
+    it('namespaces', async () => {
+        const { path, plugin } = await initplugin("_t", "basic", ["en"]);
+        const stats = await runWebpack({
+            context: __dirname,
+            entry: join(__dirname, "basic", "namespaces.js"),
+            plugins: [plugin]
+        });
+
+        assert.isTrue(stats.hasWarnings(), "not translated messages should occur warning");
+        const missingPath = join(path, "en", "other_ns.json");
+        const missings = await readJSONFile(missingPath);
+        assert.equal(_.size(missings), 1, "Only one missing text here.");
+        assert.isNotNull(missings["translated key"]);
+        const defaultNSMissingPath = join(path, "en", "translation.json");
+        assert.isFalse(await exists(defaultNSMissingPath), "missing key is not existed, file will not be generated");
+    });
 });
