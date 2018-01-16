@@ -155,6 +155,21 @@ describe('basic operation', () => {
         assert.isFalse(await exists(defaultNSMissingPath), "missing key is not existed, file will not be generated");
     });
 
+    it('string_concat', async () => {
+        const { path, plugin } = await initplugin("_t", "basic", ["en"]);
+        const stats = await runWebpack({
+            context: __dirname,
+            entry: join(__dirname, "basic", "string_concat.js"),
+            plugins: [plugin]
+        });
+
+        assert.isTrue(stats.hasWarnings(), "not translated messages should occur warning");
+        const missingPath = join(path, "en", "translation.json");
+        const missings = await readJSONFile(missingPath);
+        assert.equal(_.size(missings), 1, "Only one missing text here.");
+        assert.isNotNull(missings["another key"]);
+    });
+
     it('candidates', async () => {
         const { path, plugin } = await initplugin("_t", "basic", ["en"]);
         const stats = await runWebpack({

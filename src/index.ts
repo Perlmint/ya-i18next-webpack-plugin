@@ -79,6 +79,27 @@ function extractArgs(arg: any, warning?: (node: any) => void): Arg {
             type: "or",
             value: _.map(arg.elements, element => extractArgs(element, warning))
         };
+    case 'BinaryExpression':
+        const operator = arg.operator as string;
+        const left = extractArgs(arg.left, warning);
+        const right = extractArgs(arg.right, warning);
+
+        if (operator !== "+" || left.type !== "literal" || right.type !== "literal") {
+            if (warning) {
+                warning(arg);
+            }
+
+            return { type: "empty" };
+        }
+
+        return {
+            type: "literal",
+            value: {
+                key: left.value.key + right.value.key,
+                line: left.value.line,
+                column: left.value.column
+            }
+        };
     default:
         if (warning) {
             warning(arg);
