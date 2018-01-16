@@ -464,12 +464,12 @@ export default class I18nextPlugin {
                 plugin.warningOnCompilation(`unable to parse node at ${resource}:(${beginPos.line}, ${beginPos.column})`);
             }
         }));
-        const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(expr.loc.start) : expr.loc.start;
 
         for (const lng of plugin.option.languages) {
             for (const failed of plugin.testArg(arg, lng,)) {
                 const [ns, k] = plugin.separateNamespace(failed.key);
-                plugin.addToMissingKey(lng, ns, k, [resource, failed.line, failed.column]);
+                const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(failed) : failed;
+                plugin.addToMissingKey(lng, ns, k, [resource, startPos.line, startPos.column]);
             }
         }
     }
