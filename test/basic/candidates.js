@@ -1,0 +1,1 @@
+alert(_t(["other key", "translated key"]));

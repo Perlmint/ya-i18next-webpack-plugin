@@ -41,14 +41,18 @@ export interface Identifier {
     type: "identifier";
     name: string;
 }
-export interface Candidates {
-    type: "candidates";
+export interface Or {
+    type: "or";
+    value: Arg[];
+}
+export interface And {
+    type: "and";
     value: Arg[];
 }
 export interface Empty {
     type: "empty";
 }
-export type Arg = Literal | Identifier | Candidates | Empty;
+export type Arg = Literal | Identifier | Or | And | Empty;
 
 function extractArgs(arg: any, warning?: (node: any) => void): Arg {
     switch (arg.type) {
@@ -64,11 +68,16 @@ function extractArgs(arg: any, warning?: (node: any) => void): Arg {
         return { type: "empty" };
     case 'ConditionalExpression':
         return {
-            type: "candidates",
+            type: "and",
             value: [
                 extractArgs(arg.consequent, warning),
                 extractArgs(arg.alternate, warning)
             ]
+        };
+    case 'ArrayExpression':
+        return {
+            type: "or",
+            value: _.map(arg.elements, element => extractArgs(element, warning))
         };
     default:
         if (warning) {
@@ -458,11 +467,18 @@ export default class I18nextPlugin {
         switch (arg.type) {
             case "empty":
                 break;
-            case "candidates":
+            case "and":
                 for (const key of arg.value) {
                     faileds.push(...this.testArg(key, lng));
                 }
                 break;
+            case "or":
+                for (const key of arg.value) {
+                    const result = this.testArg(key, lng);
+                    if (result.length === 0) {
+                        return [];
+                    } else {
+                        faileds.push(...result);
                     }
                 }
                 break;

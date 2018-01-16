@@ -154,4 +154,17 @@ describe('basic operation', () => {
         const defaultNSMissingPath = join(path, "en", "translation.json");
         assert.isFalse(await exists(defaultNSMissingPath), "missing key is not existed, file will not be generated");
     });
+
+    it('candidates', async () => {
+        const { path, plugin } = await initplugin("_t", "basic", ["en"]);
+        const stats = await runWebpack({
+            context: __dirname,
+            entry: join(__dirname, "basic", "candidates.js"),
+            plugins: [plugin]
+        });
+
+        assert.isFalse(stats.hasWarnings(), "not translated messages should occur warning");
+        const missingPath = join(path, "en", "translation.json");
+        assert.isFalse(await exists(missingPath), "missing key is not existed, file will not be generated");
+    });
 });
