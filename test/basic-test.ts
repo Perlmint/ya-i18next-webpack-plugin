@@ -122,4 +122,19 @@ describe('basic operation', () => {
         const missingPath = join(path, "en", "translation.json");
         assert.isFalse(await exists(missingPath), "missing key is not existed, file will not be generated");
     });
+
+    it('ternary', async () => {
+        const { path, plugin } = await initplugin("_t", "basic", ["en"]);
+        const stats = await runWebpack({
+            context: __dirname,
+            entry: join(__dirname, "basic", "ternary.js"),
+            plugins: [plugin]
+        });
+
+        assert.isTrue(stats.hasWarnings(), "not translated messages should occur warning");
+        const missingPath = join(path, "en", "translation.json");
+        const missings = await readJSONFile(missingPath);
+        assert.equal(_.size(missings), 1, "Only one missing text here.");
+        assert.isNotNull(missings["another key"]);
+    });
 });
