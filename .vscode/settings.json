@@ -5,6 +5,7 @@
         "*.js": true,
         "*.js.map": true,
         "index.d.ts": true,
+        "*test.d.ts": true,
         "*.tgz": true,
         "node_modules": true
     }
