@@ -7,7 +7,7 @@ import _ = require("lodash");
 import i18next = require('i18next');
 import Backend = require('i18next-node-fs-backend');
 import { ReadableStreamBuffer } from 'stream-buffers';
-import { SourceMapConsumer } from 'source-map';
+import { SourceMapConsumer, Position, MappedPosition, LineRange } from 'source-map';
 const VirtualModulePlugin = require('virtual-module-webpack-plugin');
 
 const readFile = util.promisify(fs.readFile);
@@ -28,27 +28,48 @@ async function exists(path: fs.PathLike) {
     }
 }
 
-function extractArgs(arg: any, warning?: (node: any) => void) {
+export interface Literal {
+    type: "literal";
+    value: string[];
+}
+export interface Identifier {
+    type: "identifier";
+    name: string;
+}
+export interface Candidates {
+    type: "candidates";
+    value: Arg[];
+}
+export interface Empty {
+    type: "empty";
+}
+export type Arg = Literal | Identifier | Candidates | Empty;
+
+function extractArgs(arg: any, warning?: (node: any) => void): Arg {
     switch (arg.type) {
     case 'Literal':
-        return arg.value;
+        return { type: "literal", value: [arg.value] };
     case 'Identifier':
-        return arg.name;
+        return { type: "identifier", name: arg.name };
     case 'ObjectExpression':
-        const res: {[key: string]: string} = {};
-        for (const i in arg.properties) {
-            res[extractArgs(arg.properties[i].key)] = extractArgs(arg.properties[i].value);
-        }
-        return res;
+        return { type: "empty" };
+    case 'ConditionalExpression':
+        return {
+            type: "candidates",
+            value: [
+                extractArgs(arg.consequent, warning),
+                extractArgs(arg.alternate, warning)
+            ]
+        };
     default:
         if (warning) {
             warning(arg);
         }
-        return null;
+        return { type: "empty" };
     }
 }
 
-class DummySourceMapConsumer implements sourceMap.SourceMapConsumer {
+class DummySourceMapConsumer implements SourceMapConsumer {
     public file: string;
     public sourceRoot: string;
     public sources: string[];
@@ -61,26 +82,26 @@ class DummySourceMapConsumer implements sourceMap.SourceMapConsumer {
     }
 
     computeColumnSpans() {}
-    originalPositionFor(generatedPosition: sourceMap.Position & { bias?: number }): sourceMap.NullableMappedPosition {
+    originalPositionFor(generatedPosition: Position & { bias?: number }): MappedPosition {
         return _.assign({
             source: this.file,
-            name: null
+            name: ""
         }, generatedPosition);
     }
-    generatedPositionFor(originalPosition: sourceMap.MappedPosition & { bias?: number }): sourceMap.NullablePosition {
+    generatedPositionFor(originalPosition: MappedPosition & { bias?: number }): LineRange {
         return _.assign({
             lastColumn: originalPosition.column
         }, originalPosition);
     }
-    allGeneratedPositionsFor(originalPosition: sourceMap.MappedPosition): sourceMap.NullablePosition[] {
+    allGeneratedPositionsFor(originalPosition: MappedPosition): Position[] {
         return [this.generatedPositionFor(originalPosition)];
     }
     hasContentsOfAllSources() { return true; }
-    sourceContentFor(source: string, returnNullOnMissing?: boolean): string | null {
+    sourceContentFor(source: string, returnNullOnMissing?: boolean): string {
         const index = this.sources.indexOf(source);
         if (index === -1) {
             if (returnNullOnMissing) {
-                return null;
+                return "";
             } else {
                 throw new Error("never");
             }
@@ -98,6 +119,7 @@ export interface Option {
      */
     languages: string[];
     defaultNamespace?: string;
+    namespaceSeparator?: string;
     namespaces?: string[];
     /**
      * Scanning function name
@@ -160,6 +182,7 @@ export default class I18nextPlugin {
         this.option = _.defaults(option, {
             functionName: "__",
             defaultNamespace: "translation",
+            namespaceSeparator: ":",
             namespaces: [option.defaultNamespace || "translation"],
             outPath: option.resourcePath
         });
@@ -172,10 +195,11 @@ export default class I18nextPlugin {
         compiler.apply(new VirtualModulePlugin({
             moduleName: path.join(__dirname, "config.js"),
             contents: `exports = module.exports = {
-                __esModule: true,
-                RESOURCE_PATH: "${this.option.outPath}",
-                LANGUAGES: ${JSON.stringify(this.option.languages)},
-                DEFAULT_NAMESPACE: "${this.option.defaultNamespace}"
+    __esModule: true,
+    RESOURCE_PATH: "${this.option.outPath}",
+    LANGUAGES: ${JSON.stringify(this.option.languages)},
+    DEFAULT_NAMESPACE: "${this.option.defaultNamespace}",
+    NS_SEPARATOR: "${this.option.namespaceSeparator}",
 };`
         }));
 
@@ -185,7 +209,7 @@ export default class I18nextPlugin {
             fallbackLng: false,
             defaultNS: this.option.defaultNamespace,
             saveMissing: true,
-            missingKeyHandler: this.onKeyMissing.bind(this),
+            parseMissingKeyHandler: this.onKeyMissing.bind(this),
             backend: {
                 loadPath: this.option.resourcePath
             }
@@ -393,28 +417,52 @@ export default class I18nextPlugin {
             plugin.sourceMaps[resource] = new DummySourceMapConsumer(this.state.current);
         }
         const sourceMap = plugin.sourceMaps[resource];
-        const args = expr.arguments.map((arg: any) => extractArgs(arg, arg => plugin.argsToSource(sourceMap, arg).then(originalSource => {
+        const arg = extractArgs(expr.arguments[0], arg => plugin.argsToSource(sourceMap, arg).then(originalSource => {
             const beginPos = sourceMap.originalPositionFor(arg.loc.start);
             if (originalSource !== null) {
                 plugin.warningOnCompilation(`unable to parse arg ${originalSource} at ${resource}:(${beginPos.line}, ${beginPos.column})`);
             } else {
                 plugin.warningOnCompilation(`unable to parse node at ${resource}:(${beginPos.line}, ${beginPos.column})`);
             }
-        })));
+        }));
         const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(expr.loc.start) : expr.loc.start;
-        const pos = [resource, startPos.line, startPos.column];
+        const pos: [string, number, number] = [resource, startPos.line, startPos.column];
 
-        for (const lng of plugin.option.languages) {
-            const keyOrKeys: string | string[] = args[0];
-            const option: i18next.TranslationOptionsBase = Object.assign(_.defaults(args[1], {}), {
-                lng,
-                defaultValue: pos
-            } as i18next.TranslationOptionsBase);
-            i18next.t(keyOrKeys, option);
+        plugin.testArg(arg, pos);
+    }
+
+    protected separateNamespace(key: string) {
+        const ret = key.split(this.option.namespaceSeparator!, 2);
+        if (ret.length === 1) {
+            ret.unshift(this.option.defaultNamespace);
+        }
+
+        return ret;
+    }
+
+    protected testArg(arg: Arg, pos: [string, number, number]) {
+        switch (arg.type) {
+            case "empty":
+                break;
+            case "candidates":
+                for (const key of arg.value) {
+                    this.testArg(key, pos);
+                }
+                break;
+            case "literal":
+                for (const lng of this.option.languages) {
+                    if (i18next.t(arg.value, { lng }) === false) {
+                        for (const key of arg.value) {
+                            const [ns, k] = this.separateNamespace(key);
+                            this.addToMissingKey(lng, ns, k, pos);
+                        }
+                    }
+                }
+                break;
         }
     }
 
-    protected onKeyMissing(lng: string, ns: string, key: string, pos: [string, number, number]) {
+    protected addToMissingKey(lng: string, ns: string, key: string, pos: [string, number, number]) {
         const p = [lng, ns, key, pos[0]];
         let arr: [number, number][] = _.get(this.missingKeys, p);
         if (arr === undefined) {
@@ -422,6 +470,10 @@ export default class I18nextPlugin {
             arr = _.get(this.missingKeys, p);
         }
         arr.push([pos[1], pos[2]]);
+    }
+
+    protected onKeyMissing() {
+        return false;
     }
 
     protected warningOnCompilation(msg: string) {
