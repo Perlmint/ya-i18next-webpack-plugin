@@ -1,4 +1,6 @@
 [![npm version](https://badge.fury.io/js/ya-i18next-webpack-plugin.svg)](https://badge.fury.io/js/ya-i18next-webpack-plugin)
+[![Build Status](https://travis-ci.org/Perlmint/ya-i18next-webpack-plugin.svg?branch=master)](https://travis-ci.org/Perlmint/ya-i18next-webpack-plugin)
+[![Coverage Status](https://coveralls.io/repos/github/Perlmint/ya-i18next-webpack-plugin/badge.svg?branch=master)](https://coveralls.io/github/Perlmint/ya-i18next-webpack-plugin?branch=master)
 [![dependencies Status](https://david-dm.org/perlmint/ya-i18next-webpack-plugin/status.svg)](https://david-dm.org/perlmint/ya-i18next-webpack-plugin)
 [![devDependencies Status](https://david-dm.org/perlmint/ya-i18next-webpack-plugin/dev-status.svg)](https://david-dm.org/perlmint/ya-i18next-webpack-plugin?type=dev)
 # ya-i18next-webpack-plugin
