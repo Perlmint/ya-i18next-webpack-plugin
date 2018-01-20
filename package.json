@@ -6,7 +6,8 @@
   "typings": "index.d.ts",
   "scripts": {
     "build": "tsc -p src",
-    "test": "cross-env TS_NODE_PROJECT=test mocha --compilers ts:ts-node/register",
+    "test": "cross-env TS_NODE_PROJECT=test nyc mocha --compilers ts:ts-node/register",
+    "coverage": "nyc report --reporter=text-lcov | coveralls",
     "prepublish": "npm test && npm run build"
   },
   "repository": {
@@ -38,6 +39,7 @@
     "chai": "^4.1.2",
     "cross-env": "^5.1.0",
     "mocha": "^3.5.3",
+    "nyc": "^11.4.1",
     "tmp": "0.0.33",
     "ts-node": "^4.1.0",
     "typescript": "^2.6.2"
@@ -55,5 +57,21 @@
     "config.d.ts",
     "index.js",
     "index.d.ts"
-  ]
+  ],
+  "nyc": {
+    "extension": [
+      ".ts"
+    ],
+    "exclude": [
+      "**/*.d.ts",
+      "test",
+      "coverage",
+      "*.js"
+    ],
+    "reporter": [
+      "html",
+      "text"
+    ],
+    "all": true  
+  }
 }
