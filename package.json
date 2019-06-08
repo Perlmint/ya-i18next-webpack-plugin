@@ -31,7 +31,7 @@
     "@types/i18next": "^8.4.6",
     "@types/i18next-node-fs-backend": "0.0.29",
     "@types/lodash": "^4.14.134",
-    "@types/mocha": "^2.2.48",
+    "@types/mocha": "^5.2.7",
     "@types/node": "^8.10.49",
     "@types/stream-buffers": "^3.0.3",
     "@types/tmp": "0.0.33",
