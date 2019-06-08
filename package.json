@@ -50,7 +50,7 @@
     "lodash": "^4.17.4",
     "source-map": "^0.6.1",
     "stream-buffers": "^3.0.1",
-    "virtual-module-webpack-plugin": "^0.3.0",
+    "virtual-module-webpack-plugin": "^0.4.1",
     "webpack": "^3.10.0"
   },
   "files": [
