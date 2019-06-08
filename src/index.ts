@@ -208,9 +208,9 @@ function removeMap<T>(obj: _.Dictionary<T>, keys: (string | undefined)[]) {
 }
 
 export default class I18nextPlugin {
-    protected compilation: wp.Compilation;
+    protected compilation!: wp.Compilation;
     protected option: InternalOption;
-    protected context: string;
+    protected context!: string;
     protected missingKeys: CollectedKeys = {};
     protected startTime = Date.now();
     protected prevTimestamps: {[file: string]: number} = {};
