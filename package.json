@@ -35,7 +35,7 @@
     "@types/node": "^8.10.49",
     "@types/stream-buffers": "^3.0.3",
     "@types/tmp": "0.0.33",
-    "@types/webpack": "^3.8.18",
+    "@types/webpack": "^4.4.33",
     "chai": "^4.2.0",
     "cross-env": "^5.2.0",
     "mocha": "^6.1.4",
