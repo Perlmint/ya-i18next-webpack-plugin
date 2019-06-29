@@ -7,7 +7,7 @@ import _ = require("lodash");
 import i18next = require('i18next');
 import Backend = require('i18next-node-fs-backend');
 import { ReadableStreamBuffer } from 'stream-buffers';
-import { SourceMapConsumer, Position, MappedPosition, LineRange } from 'source-map';
+import { SourceMapConsumer, Position, MappedPosition, NullableMappedPosition, NullablePosition } from 'source-map';
 const VirtualModulePlugin = require('virtual-module-webpack-plugin');
 
 const readFile = util.promisify(fs.readFile);
@@ -121,18 +121,18 @@ class DummySourceMapConsumer implements SourceMapConsumer {
     }
 
     computeColumnSpans() {}
-    originalPositionFor(generatedPosition: Position & { bias?: number }): MappedPosition {
+    originalPositionFor(generatedPosition: Position & { bias?: number }): NullableMappedPosition {
         return _.assign({
             source: this.file,
             name: ""
         }, generatedPosition);
     }
-    generatedPositionFor(originalPosition: MappedPosition & { bias?: number }): LineRange {
+    generatedPositionFor(originalPosition: MappedPosition & { bias?: number }): NullablePosition {
         return _.assign({
             lastColumn: originalPosition.column
         }, originalPosition);
     }
-    allGeneratedPositionsFor(originalPosition: MappedPosition): Position[] {
+    allGeneratedPositionsFor(originalPosition: MappedPosition): NullablePosition[] {
         return [this.generatedPositionFor(originalPosition)];
     }
     hasContentsOfAllSources() { return true; }
@@ -147,8 +147,8 @@ class DummySourceMapConsumer implements SourceMapConsumer {
         }
         return this.sourcesContent[index];
     }
-    eachMapping(): void {
-    }
+    eachMapping(): void {}
+    destroy(): void {}
 }
 
 export interface Option {
@@ -448,10 +448,10 @@ export default class I18nextPlugin {
         return Promise.resolve(null);
     }
 
-    protected static onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
+    protected static async onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
         const resource = this.state.current.resource;
         if (plugin.sourceMaps[resource] === undefined && this.state.current._source._sourceMap !== undefined) {
-            plugin.sourceMaps[resource] = new SourceMapConsumer(this.state.current._source._sourceMap);
+            plugin.sourceMaps[resource] = await new SourceMapConsumer(this.state.current._source._sourceMap);
         } else {
             plugin.sourceMaps[resource] = new DummySourceMapConsumer(this.state.current);
         }
@@ -469,7 +469,7 @@ export default class I18nextPlugin {
             for (const failed of plugin.testArg(arg, lng,)) {
                 const [ns, k] = plugin.separateNamespace(failed.key);
                 const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(failed) : failed;
-                plugin.addToMissingKey(lng, ns, k, [resource, startPos.line, startPos.column]);
+                plugin.addToMissingKey(lng, ns, k, [resource, startPos.line!, startPos.column!]);
             }
         }
     }
