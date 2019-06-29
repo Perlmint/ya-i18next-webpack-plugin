@@ -9,7 +9,7 @@
 
 /// <reference types="node" />
 
-import * as Tapable from 'tapable';
+import { Tapable } from 'tapable';
 import * as UglifyJS from 'uglify-js';
 import * as SourceMap from 'source-map';
 
