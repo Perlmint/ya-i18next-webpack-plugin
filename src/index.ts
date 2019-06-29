@@ -1,11 +1,11 @@
-import wp = require("webpack");
-import fs = require("fs");
-import path = require("path");
-import util = require('util');
-import readline = require('readline');
-import _ = require("lodash");
-import i18next = require('i18next');
-import Backend = require('i18next-node-fs-backend');
+import { Module, Compilation, Parser, Expression } from "webpack";
+import fs from "fs";
+import path from "path";
+import util from 'util';
+import readline from 'readline';
+import _ from "lodash";
+import i18next from 'i18next';
+import Backend from 'i18next-node-fs-backend';
 import { ReadableStreamBuffer } from 'stream-buffers';
 import { SourceMapConsumer, Position, MappedPosition, NullableMappedPosition, NullablePosition } from 'source-map';
 const VirtualModulePlugin = require('virtual-module-webpack-plugin');
@@ -113,7 +113,7 @@ class DummySourceMapConsumer implements SourceMapConsumer {
     public sourceRoot: string;
     public sources: string[];
     public sourcesContent: string[];
-    public constructor(module: wp.Module) {
+    public constructor(module: Module) {
         this.file = module.resource;
         this.sourceRoot = module.resource;
         this.sources = [this.file];
@@ -208,7 +208,7 @@ function removeMap<T>(obj: _.Dictionary<T>, keys: (string | undefined)[]) {
 }
 
 export default class I18nextPlugin {
-    protected compilation!: wp.Compilation;
+    protected compilation!: Compilation;
     protected option: InternalOption;
     protected context!: string;
     protected missingKeys: CollectedKeys = {};
@@ -229,7 +229,7 @@ export default class I18nextPlugin {
         i18next.use(Backend);
     }
 
-    public apply(compiler: wp.Compiler) {
+    public apply(compiler: any) {
         // provide config via virtual module plugin
         compiler.apply(new VirtualModulePlugin({
             moduleName: path.join(__dirname, "config.js"),
@@ -256,7 +256,7 @@ export default class I18nextPlugin {
         this.context = compiler.options.context || "";
         this.initMissingDir();
 
-        compiler.plugin("compilation", (compilation, data) => {
+        compiler.plugin("compilation", (compilation: Compilation, data: any) => {
             // reset for new compliation
             i18next.reloadResources(this.option.languages);
             this.compilation = compilation;
@@ -283,7 +283,7 @@ export default class I18nextPlugin {
                 "parser",
                 (parser: any) => {
                     const that = this;
-                    parser.plugin(`call ${this.option.functionName}`, function(this: wp.Parser, arg: wp.Expression) {
+                    parser.plugin(`call ${this.option.functionName}`, function(this: Parser, arg: Expression) {
                         return I18nextPlugin.onTranslateFunctionCall.call(this, that, arg);
                     });
                 }
@@ -308,7 +308,7 @@ export default class I18nextPlugin {
         this.missingDirInitialized = true;
     }
 
-    protected async onEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
+    protected async onEmit(compilation: Compilation, callback: (err?: Error) => void) {
         // emit translation files
         this.prevTimestamps = compilation.fileTimestamps;
 
@@ -353,7 +353,7 @@ export default class I18nextPlugin {
         return this.option.outPath;
     }
 
-    protected async onAfterEmit(compilation: wp.Compilation, callback: (err?: Error) => void) {
+    protected async onAfterEmit(compilation: Compilation, callback: (err?: Error) => void) {
         const remains: _.Dictionary<_.Dictionary<any>> = _.fromPairs(_.map(
             this.option.languages, lng => [
                 lng,
@@ -411,7 +411,7 @@ export default class I18nextPlugin {
         }
     }
 
-    protected argsToSource(sourceMap: SourceMapConsumer, arg: wp.Expression): Promise<string | null> {
+    protected argsToSource(sourceMap: SourceMapConsumer, arg: Expression): Promise<string | null> {
         const beginPos = sourceMap.originalPositionFor(arg.loc.start);
         const endPos = sourceMap.originalPositionFor(arg.loc.end);
         if (beginPos.source !== null) {
@@ -448,7 +448,7 @@ export default class I18nextPlugin {
         return Promise.resolve(null);
     }
 
-    protected static async onTranslateFunctionCall(this: wp.Parser, plugin: I18nextPlugin, expr: wp.Expression) {
+    protected static async onTranslateFunctionCall(this: Parser, plugin: I18nextPlugin, expr: Expression) {
         const resource = this.state.current.resource;
         if (plugin.sourceMaps[resource] === undefined && this.state.current._source._sourceMap !== undefined) {
             plugin.sourceMaps[resource] = await new SourceMapConsumer(this.state.current._source._sourceMap);
@@ -504,7 +504,7 @@ export default class I18nextPlugin {
                 }
                 break;
             case "literal":
-                if (i18next.t(arg.value.key, { lng }) === false) {
+                if (!i18next.t(arg.value.key, { lng })) {
                     faileds.push(arg.value);
                 }
                 break;

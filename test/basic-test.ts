@@ -3,9 +3,9 @@ import { readFile as readFileAsync, PathLike, stat as statAsync } from 'fs';
 import { promisify } from 'util';
 import { join } from 'path';
 import 'mocha';
-import * as webpack from 'webpack';
+import webpack from 'webpack';
 import { assert } from 'chai';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import Plugin from '../src/index';
 
 const tmpdir = () => new Promise<[string, () => void]>((resolve, reject) => dir((err, path, cleanup) => {
