@@ -1,19 +1,27 @@
-import { Module, Compilation, Parser, Expression } from "webpack";
-import fs from "fs";
+import wp, { Compilation } from "webpack";
+import fs, { existsSync, readFileSync } from "fs";
 import path from "path";
 import util from 'util';
-import readline from 'readline';
 import _ from "lodash";
 import i18next from 'i18next';
-import Backend from 'i18next-node-fs-backend';
-import { ReadableStreamBuffer } from 'stream-buffers';
+import Backend from 'i18next-fs-backend';
 import { SourceMapConsumer, Position, MappedPosition, NullableMappedPosition, NullablePosition } from 'source-map';
-const VirtualModulePlugin = require('virtual-module-webpack-plugin');
+import VirtualModulePlugin from 'webpack-virtual-modules';
+import estree from 'estree';
 
-const readFile = util.promisify(fs.readFile);
 const unlink = util.promisify(fs.unlink);
 const stat = util.promisify(fs.stat);
 const mkdir = util.promisify(fs.mkdir);
+
+// expose webpack internal types
+namespace wp_internal {
+    export type WebpackError = typeof wp.Compilation.prototype.warnings[0];
+    export type SourcePosition = Extract<WebpackError['loc'], { start: Object }>['start'];
+}
+
+interface CompilationExt {
+    fileTimestamps?: {[key: string]: number};
+}
 
 async function exists(path: fs.PathLike) {
     try {
@@ -54,17 +62,24 @@ export interface Empty {
 }
 export type Arg = Literal | Identifier | Or | And | Empty;
 
-function extractArgs(arg: any, warning?: (node: any) => void): Arg {
+function extractArgs(arg: estree.Expression, warning: (node: estree.Expression, reason: string) => void): Arg {
     switch (arg.type) {
     case 'Literal':
-        return { type: "literal", value: {
-            key: arg.value,
-            line: arg.loc.start.line,
-            column: arg.loc.start.column
-         } };
+        if (typeof arg.value != 'string') {
+            warning(arg, 'Non string literal');
+
+            return { type: "empty" };
+        } else {
+            return { type: "literal", value: {
+                key: arg.value as any,
+                line: arg.loc!.start.line,
+                column: arg.loc!.start.column
+            } };
+        }
     case 'Identifier':
         return { type: "identifier", name: arg.name };
     case 'ObjectExpression':
+    case 'MemberExpression':
         return { type: "empty" };
     case 'ConditionalExpression':
         return {
@@ -77,7 +92,7 @@ function extractArgs(arg: any, warning?: (node: any) => void): Arg {
     case 'ArrayExpression':
         return {
             type: "or",
-            value: _.map(arg.elements, element => extractArgs(element, warning))
+            value: _.map(arg.elements, element => extractArgs(element as any, warning))
         };
     case 'BinaryExpression':
         const operator = arg.operator as string;
@@ -85,9 +100,7 @@ function extractArgs(arg: any, warning?: (node: any) => void): Arg {
         const right = extractArgs(arg.right, warning);
 
         if (operator !== "+" || left.type !== "literal" || right.type !== "literal") {
-            if (warning) {
-                warning(arg);
-            }
+            warning(arg, 'This binary expression could not be evaluated as literal');
 
             return { type: "empty" };
         }
@@ -100,10 +113,44 @@ function extractArgs(arg: any, warning?: (node: any) => void): Arg {
                 column: left.value.column
             }
         };
-    default:
-        if (warning) {
-            warning(arg);
+    case 'TemplateLiteral':
+        const values = arg.expressions.map(v => [extractArgs(v, warning), v]);
+        let hasNonLiteralExpr = false;
+        for (const [expr, arg] of values) {
+            if (expr.type != 'literal') {
+                warning(arg as estree.Expression, 'This is non literal value in template literal');
+                hasNonLiteralExpr = true;
+            }
         }
+
+        if (hasNonLiteralExpr) {
+            // Can't evaluate
+            return {
+                type: 'empty',
+            };
+        }
+
+        const literals = values.map(([expr]) => expr as Literal);
+        literals.push(...arg.quasis.map(v => ({
+            type: 'literal',
+            value: {
+                key: v.value.cooked,
+                line: 0,
+                column: v.loc!.start.column,
+            },
+        } as Literal)));
+
+        literals.sort((a, b) => a.value.column - b.value.column);
+
+        return {
+            type: 'literal',
+            value: {
+                key: literals.map(v => v.value.key).join(''),
+                ...arg.loc!.start,
+            }
+        }
+    default:
+        warning(arg, `Unknown type(${arg.type}) of argument`);
         return { type: "empty" };
     }
 }
@@ -113,11 +160,11 @@ class DummySourceMapConsumer implements SourceMapConsumer {
     public sourceRoot: string;
     public sources: string[];
     public sourcesContent: string[];
-    public constructor(module: Module) {
+    public constructor(module: wp.NormalModule) {
         this.file = module.resource;
         this.sourceRoot = module.resource;
         this.sources = [this.file];
-        this.sourcesContent = [module._source._value];
+        this.sourcesContent = [/*module.source().buffer().buffer*/];
     }
 
     computeColumnSpans() {}
@@ -168,9 +215,11 @@ export interface Option {
     functionName?: string;
     resourcePath: string;
     /**
-     * save missing translations to...
+     * Path to save used but missing in translations.
+     * 
+     * Set undefined to disable
      */
-    pathToSaveMissing: string;
+    pathToSaveMissing?: string;
     /**
      * change emit path
      * if this value is not set, emit to resourcePath
@@ -197,7 +246,7 @@ function getPath(template: string, language?: string, namespace?: string) {
 
 export type CollectedKeys = {[language: string]: {[namespace: string]: {[key: string]: {[module: string]: [number, number]}}}};
 
-function removeMap<T>(obj: _.Dictionary<T>, keys: (string | undefined)[]) {
+function removeMap<T>(obj: Record<string, T>, keys: (string | undefined)[]) {
     for (const emptyKey of keys) {
         if (emptyKey !== undefined) {
             delete obj[emptyKey];
@@ -207,15 +256,77 @@ function removeMap<T>(obj: _.Dictionary<T>, keys: (string | undefined)[]) {
     return obj;
 }
 
+class PluginWarning<D> extends Error implements wp_internal.WebpackError {
+    loc: {
+        start: wp_internal.SourcePosition;
+        end?: wp_internal.SourcePosition;
+    };
+    hideStack = false;
+    file: string;
+    chunk!: wp.Chunk;
+
+    constructor(public module: wp.NormalModule, message: string, [startPos, endPos]: [MappedPosition, MappedPosition?], public details: D) {
+        super(message);
+
+        this.file = module.resource;
+        this.loc = {
+            start: {
+                line: startPos.line,
+                column: startPos.column,
+            },
+            end: endPos ? {
+                line: endPos.line,
+                column: endPos.column,
+            } : undefined,
+        };
+    }
+
+    serialize(__0: { write: any }): void {
+
+    }
+	deserialize(__0: { read: any }): void {
+
+    }
+}
+
+class MissingTranslationWarning extends PluginWarning<{
+    language: string;
+    namespace?: string;
+    key: string;
+}> {
+    constructor(module: wp.NormalModule, pos: [MappedPosition, MappedPosition?], language: string, key: string, namespace?: string) {
+        super(module, `missing translation "${key}" in ${language}/${namespace}`, pos, {
+            language,
+            namespace,
+            key,
+        });
+
+        this.name = 'MissingTranslationWarning';
+    }
+}
+
+class ParsingFailureWarning extends PluginWarning<{
+    reason: string,
+}> {
+
+    constructor(module: wp.NormalModule, reason: string, pos: [MappedPosition, MappedPosition?]) {
+        super(module, `unable to parse translaction key: ${reason}`, pos, {
+            reason,
+        });
+
+        this.name = 'ParsingFailureWarning';
+    }
+}
+
 export default class I18nextPlugin {
     protected compilation!: Compilation;
     protected option: InternalOption;
     protected context!: string;
-    protected missingKeys: CollectedKeys = {};
     protected startTime = Date.now();
     protected prevTimestamps: {[file: string]: number} = {};
     protected sourceMaps: {[key: string]: SourceMapConsumer} = {};
-    protected missingDirInitialized = false;
+
+    static TAP_NAME: Readonly<string> = 'YaI18nextWebpackPlugin';
 
     public constructor(option: Option) {
         this.option = _.defaults(option, {
@@ -229,18 +340,9 @@ export default class I18nextPlugin {
         i18next.use(Backend);
     }
 
-    public apply(compiler: any) {
-        // provide config via virtual module plugin
-        compiler.apply(new VirtualModulePlugin({
-            moduleName: path.join(__dirname, "config.js"),
-            contents: `exports = module.exports = {
-    __esModule: true,
-    RESOURCE_PATH: "${this.option.outPath}",
-    LANGUAGES: ${JSON.stringify(this.option.languages)},
-    DEFAULT_NAMESPACE: "${this.option.defaultNamespace}",
-    NS_SEPARATOR: "${this.option.namespaceSeparator}",
-};`
-        }));
+    public apply(compiler: wp.Compiler) {
+        const virtualModulePlugin = new VirtualModulePlugin();
+        virtualModulePlugin.apply(compiler);
 
         i18next.init({
             preload: this.option.languages,
@@ -254,20 +356,32 @@ export default class I18nextPlugin {
             }
         });
         this.context = compiler.options.context || "";
-        this.initMissingDir();
 
-        compiler.plugin("compilation", (compilation: Compilation, data: any) => {
+        compiler.hooks.compilation.tap(I18nextPlugin.TAP_NAME, (compilation: Compilation & CompilationExt, data) => {
+            // provide config via virtual module plugin
+            virtualModulePlugin.writeModule(
+                path.join(__dirname, "config.js"),
+                `exports = module.exports = {
+    __esModule: true,
+    RESOURCE_PATH: "${this.option.outPath}",
+    LANGUAGES: ${JSON.stringify(this.option.languages)},
+    DEFAULT_NAMESPACE: "${this.option.defaultNamespace}",
+    NS_SEPARATOR: "${this.option.namespaceSeparator}",
+};`
+            );
+
             // reset for new compliation
             i18next.reloadResources(this.option.languages);
             this.compilation = compilation;
             const changedFiles = _.keys(compilation.fileTimestamps).filter(
-                watchfile => (this.prevTimestamps[watchfile] || this.startTime) < (compilation.fileTimestamps[watchfile] || Infinity)
+                watchfile => (this.prevTimestamps[watchfile] || this.startTime) < (compilation.fileTimestamps![watchfile] || Infinity)
             );
 
             for (const changed of changedFiles) {
                 delete this.sourceMaps[changed];
             }
-            removeMap(this.missingKeys, _.map(this.missingKeys, (namespaces, lng) =>
+            const missingKeys: CollectedKeys = {}
+            removeMap(missingKeys, _.map(missingKeys, (namespaces, lng) =>
                 _.isEmpty(removeMap(namespaces, _.map(namespaces, (values, ns) =>
                     _.isEmpty(removeMap(values, _.map(values, (deps, key) => {
                         for (const changed of changedFiles) {
@@ -279,82 +393,71 @@ export default class I18nextPlugin {
                 ))) ? lng : undefined
             ));
 
-            data.normalModuleFactory.plugin(
-                "parser",
-                (parser: any) => {
-                    const that = this;
-                    parser.plugin(`call ${this.option.functionName}`, function(this: Parser, arg: Expression) {
-                        return I18nextPlugin.onTranslateFunctionCall.call(this, that, arg);
-                    });
-                }
-            );
-        });
-        compiler.plugin("emit", this.onEmit.bind(this));
-        compiler.plugin("after-emit", this.onAfterEmit.bind(this));
-    }
+            this.addTranslations(compilation);
 
-    protected async initMissingDir() {
-        if (this.missingDirInitialized) {
-            return;
-        }
-
-        const template = path.resolve(this.context, this.option.pathToSaveMissing);
-        await Promise.all(this.option.namespaces.map(ns => this.option.languages.map(async lng => {
-            const dirPath = path.dirname(getPath(template, lng, ns));
-            if (!await exists(dirPath)) {
-                await mkdir(dirPath);
-            }
-        })));
-        this.missingDirInitialized = true;
-    }
-
-    protected async onEmit(compilation: Compilation, callback: (err?: Error) => void) {
-        // emit translation files
-        this.prevTimestamps = compilation.fileTimestamps;
-
-        try {
-            await Promise.all(_.flatten(_.map(this.option.languages, async lng => {
-                const resourceTemplate = path.resolve(this.context, getPath(this.option.resourcePath, lng));
-                const resourceDir = path.dirname(resourceTemplate);
-                if (!await exists(resourceDir)) {
-                    compilation.missingDependencies.push(resourceDir);
-                    return [];
-                }
-
-                return Promise.all(_.map(this.option.namespaces, async ns => {
-                    const resourcePath = getPath(resourceTemplate, undefined, ns);
-                    const outPath = getPath(this.outPath, lng, ns);
-
-                    try {
-                        const v = await readFile(resourcePath);
-                        compilation.assets[outPath] = {
-                            size() { return v.length; },
-                            source() { return v; }
-                        };
-
-                        compilation.fileDependencies.push(path.resolve(resourcePath));
-                    } catch (e) {
-                        compilation.missingDependencies.push(resourcePath);
-                        compilation.warnings.push(`Can't emit ${outPath}. It looks like ${resourcePath} is not exists.`);
+            data.normalModuleFactory.hooks.parser.for('javascript/auto').tap(I18nextPlugin.TAP_NAME, (parser: wp.javascript.JavascriptParser) => {
+                const that = this;
+                parser.hooks.call.for(this.option.functionName).tap(I18nextPlugin.TAP_NAME, (expr) => {
+                    if (expr.type != 'CallExpression') {
+                        return;
                     }
-                }));
-            })));
+                    I18nextPlugin.onTranslateFunctionCall.call(parser, that, expr, missingKeys);
+                });
+            });
 
-            callback();
-        } catch (e) {
-            callback(e);
+            if (this.option.pathToSaveMissing != null) {
+                compilation.hooks.processAssets.tapPromise(I18nextPlugin.TAP_NAME, async () => this.writeMissingKeys(compilation, missingKeys));
+            }
+        });
+    }
+
+    /**
+     * Add translations as asset
+     * @param compilation 
+     */
+    protected addTranslations(compilation: wp.Compilation) {
+        for (const lng of this.option.languages) {
+            const resourceTemplate = path.resolve(this.context!, getPath(this.option.resourcePath, lng));
+            const resourceDir = path.dirname(resourceTemplate);
+
+            if (!existsSync(resourceDir)) {
+                compilation.missingDependencies.add(resourceDir);
+                continue;
+            }
+
+            for (const ns of this.option.namespaces) {
+                const resourcePath = getPath(resourceTemplate, undefined, ns);
+                const outPath = getPath(this.outPath, lng, ns);
+
+                try {
+                    const source = readFileSync(resourcePath);
+                    compilation.emitAsset(outPath, new wp.sources.RawSource(source, false));
+    
+                    compilation.fileDependencies.add(path.resolve(resourcePath));
+                } catch (e) {
+                    compilation.missingDependencies.add(resourcePath);
+                    compilation.warnings.push(new Error(`Can't emit ${outPath}. It looks like ${resourcePath} is not exists.`) as any);
+                }
+            }
         }
+    }
+
+    protected makeRelative(targetPath: string) {
+        return path.relative(this.context, targetPath);
     }
 
     protected get outPath() {
         if (path.isAbsolute(this.option.outPath)) {
-            return path.relative(this.context, this.option.outPath);
+            return this.makeRelative(this.option.outPath);
         }
         return this.option.outPath;
     }
 
-    protected async onAfterEmit(compilation: Compilation, callback: (err?: Error) => void) {
-        const remains: _.Dictionary<_.Dictionary<any>> = _.fromPairs(_.map(
+    protected async writeMissingKeys(_compilation: wp.Compilation, missingKeys: CollectedKeys) {
+        const pathToSaveMissing = this.option.pathToSaveMissing!;
+        const context = this.context!;
+
+        const remains: Record<string, Record<string, any>> = _.fromPairs(_.map(
             this.option.languages, lng => [
                 lng,
                 _.fromPairs(_.map(
@@ -362,114 +465,116 @@ export default class I18nextPlugin {
                 ))
             ]
         ));
-        try {
-            // write missing
-            await this.initMissingDir();
-            await Promise.all(_.map(this.missingKeys, async (namespaces, lng) => {
-                const resourceTemplate = path.resolve(this.context, getPath(this.option.pathToSaveMissing, lng));
-                const resourceDir = path.dirname(resourceTemplate);
-                try {
-                    await mkdir(resourceDir);
-                } catch (e) {
-                    if (e.code !== 'EEXIST') {
-                        throw e;
-                    }
+
+        // write missing
+        await Promise.all(_.map(missingKeys, async (namespaces, lng) => {
+            const resourceTemplate = path.resolve(context, getPath(pathToSaveMissing, lng));
+            const resourceDir = path.dirname(resourceTemplate);
+
+            if (_.isEmpty(namespaces)) {
+                return;
+            }
+
+            if (_.reduce(namespaces, (acc, values) => acc && _.isEmpty(values), true)) {
+                return;
+            }
+
+            try {
+                await mkdir(resourceDir);
+            } catch (e) {
+                if (e.code !== 'EEXIST') {
+                    throw e;
                 }
+            }
 
-                return await Promise.all(_.map(namespaces, (values, ns) => new Promise<void>(resolve => {
-                    delete remains[lng][ns];
-                    const missingPath = getPath(resourceTemplate, undefined, ns);
-                    const stream = fs.createWriteStream(missingPath, {
-                        encoding: "utf-8"
-                    });
-                    const keys = _.sortedUniq(_.sortBy(_.keys(values)));
-                    stream.write("{\n");
-                    stream.write(_.map(
-                        keys,
-                        key => `\t"${key}": [\n${_.map(
-                            values[key], (pos, module) => `\t\t"${_.trim(JSON.stringify(path.relative(this.context, module)), '"')}(${pos})"`).join(",\n")
-                        }\n\t]`).join(",\n")
-                    );
-                    stream.end("\n}");
-                    stream.on("close", () => resolve());
-
-                    compilation.warnings.push(`missing translation ${_.size(values)} keys in ${lng}/${ns}`);
-                })));
-            }));
-            // remove previous missings
-            await Promise.all(_.map(remains, (namespaces, lng) =>
-                Promise.all(_.map(namespaces, async (__, ns) => {
-                    const missingPath = path.resolve(this.context, getPath(this.option.pathToSaveMissing, lng, ns));
-                    if (await exists(missingPath)) {
-                        await unlink(missingPath);
-                    }
-                }))
-            ));
-            callback();
-        } catch (e) {
-            callback(e);
-        }
+            return await Promise.all(_.map(namespaces, (values, ns) => new Promise<void>(resolve => {
+                delete remains[lng][ns];
+                const missingPath = getPath(resourceTemplate, undefined, ns);
+                fs.writeFileSync(path.join(resourceDir, 'debug'), missingPath, { encoding: 'utf-8' });
+                const stream = fs.createWriteStream(missingPath, {
+                    encoding: "utf-8"
+                });
+                const keys = _.sortedUniq(_.sortBy(_.keys(values)));
+                stream.write("{\n");
+                stream.write(_.map(
+                    keys,
+                    key => `\t"${key}": [\n${_.map(
+                        values[key], (pos, module) => `\t\t"${_.trim(JSON.stringify(this.makeRelative(module)), '"')}(${pos})"`).join(",\n")
+                    }\n\t]`).join(",\n")
+                );
+                stream.end("\n}");
+                stream.on("close", () => resolve());
+            })));
+        }));
+        // remove previous missings
+        await Promise.all(_.map(remains, (namespaces, lng) =>
+            Promise.all(_.map(namespaces, async (__, ns) => {
+                const missingPath = path.resolve(context, getPath(pathToSaveMissing, lng, ns));
+                if (await exists(missingPath)) {
+                    await unlink(missingPath);
+                }
+            }))
+        ));
     }
 
-    protected argsToSource(sourceMap: SourceMapConsumer, arg: Expression): Promise<string | null> {
-        const beginPos = sourceMap.originalPositionFor(arg.loc.start);
-        const endPos = sourceMap.originalPositionFor(arg.loc.end);
-        if (beginPos.source !== null) {
-            const originalSource = sourceMap.sourceContentFor(beginPos.source);
-            const sourceLines: string[] = [];
-            if (originalSource !== null) {
-                const buffer = new ReadableStreamBuffer();
-                buffer.put(originalSource);
-                buffer.put("\n");
-                let lineIdx = 0;
-                return new Promise<string>(resolve => {
-                    const lineInterface = readline.createInterface(buffer).on("line", (line: string) => {
-                        lineIdx++;
-                        let beginCol = 0, endCol = line.length;
-                        if (lineIdx === beginPos.line) {
-                            beginCol = beginPos.column as number;
-                        }
-                        if (lineIdx === endPos.line) {
-                            endCol = endPos.column as number;
-                        }
-                        if (lineIdx >= (beginPos.line as number) && lineIdx <= (endPos.line as number)) {
-                            sourceLines.push(line.substring(beginCol, endCol));
-                        }
+    protected argsToSource(sourceMap: SourceMapConsumer, arg: estree.Expression): string | null {
+        const beginPos = sourceMap.originalPositionFor(arg.loc!.start);
+        const endPos = sourceMap.originalPositionFor(arg.loc!.end);
+        if (beginPos.source === null) {
+            return null;
+        }
+        const originalSource = sourceMap.sourceContentFor(beginPos.source);
+        const sourceLines: string[] = [];
+        if (originalSource == null) {
+            return null;
+        }
+        
+        let last_pos = 0;
+        let line_end = 0;
+        let lineIdx = 0;
+        while (true) {
+            line_end = originalSource.indexOf("\n", last_pos);
+            lineIdx++;
+            let beginCol = 0, endCol = line_end - last_pos;
+            if (lineIdx === beginPos.line) {
+                beginCol = beginPos.column as number;
+            }
+            if (lineIdx === endPos.line) {
+                endCol = endPos.column as number;
+            }
+            if (lineIdx >= (beginPos.line as number) && lineIdx <= (endPos.line as number)) {
+                sourceLines.push(originalSource.substring(last_pos + beginCol, last_pos + endCol));
+            }
 
-                        if (lineIdx === endPos.line) {
-                            lineInterface.close();
-                        }
-                    }).on("close", () => {
-                        resolve(sourceLines.join("\n"));
-                    });
-                });
+            if (lineIdx === endPos.line || line_end === -1) {
+                break;
             }
         }
-        return Promise.resolve(null);
+
+        return sourceLines.join("\n");
     }
 
-    protected static async onTranslateFunctionCall(this: Parser, plugin: I18nextPlugin, expr: Expression) {
-        const resource = this.state.current.resource;
-        if (plugin.sourceMaps[resource] === undefined && this.state.current._source._sourceMap !== undefined) {
-            plugin.sourceMaps[resource] = await new SourceMapConsumer(this.state.current._source._sourceMap);
+    protected static async onTranslateFunctionCall(this: wp.javascript.JavascriptParser, plugin: I18nextPlugin, expr: estree.CallExpression, missingKeys: CollectedKeys) {
+        const module = this.state.current;
+        const resource = module.resource;
+        if (plugin.sourceMaps[resource] === undefined && (module as any)._source._sourceMap !== undefined) {
+            plugin.sourceMaps[resource] = await new SourceMapConsumer((module as any)._source._sourceMap);
         } else {
-            plugin.sourceMaps[resource] = new DummySourceMapConsumer(this.state.current);
+            plugin.sourceMaps[resource] = new DummySourceMapConsumer(module);
         }
         const sourceMap = plugin.sourceMaps[resource];
-        const arg = extractArgs(expr.arguments[0], arg => plugin.argsToSource(sourceMap, arg).then(originalSource => {
-            const beginPos = sourceMap.originalPositionFor(arg.loc.start);
-            if (originalSource !== null) {
-                plugin.warningOnCompilation(`unable to parse arg ${originalSource} at ${resource}:(${beginPos.line}, ${beginPos.column})`);
-            } else {
-                plugin.warningOnCompilation(`unable to parse node at ${resource}:(${beginPos.line}, ${beginPos.column})`);
-            }
-        }));
+        const arg = extractArgs(expr.arguments[0] as any, (arg, reason) => {
+            const beginPos = sourceMap.originalPositionFor(arg.loc!.start);
+            const endPos = sourceMap.originalPositionFor(arg.loc!.end);
+            module.addWarning(new ParsingFailureWarning(module, reason, [beginPos, endPos] as any) as any);
+        });
 
         for (const lng of plugin.option.languages) {
-            for (const failed of plugin.testArg(arg, lng,)) {
+            for (const failed of plugin.testArg(arg, lng)) {
                 const [ns, k] = plugin.separateNamespace(failed.key);
-                const startPos = sourceMap !== undefined ? sourceMap.originalPositionFor(failed) : failed;
-                plugin.addToMissingKey(lng, ns, k, [resource, startPos.line!, startPos.column!]);
+                const startPos = sourceMap.originalPositionFor(failed);
+                I18nextPlugin.addToMissingKey(missingKeys, lng, ns, k, [resource, startPos.line, startPos.column]);
+                module.addWarning(new MissingTranslationWarning(module, [startPos, null] as any, lng, k, ns) as any);
             }
         }
     }
@@ -504,7 +609,7 @@ export default class I18nextPlugin {
                 }
                 break;
             case "literal":
-                if (!i18next.t(arg.value.key, { lng })) {
+                if (i18next.exists(arg.value.key, { lng }) === false) {
                     faileds.push(arg.value);
                 }
                 break;
@@ -512,23 +617,17 @@ export default class I18nextPlugin {
         return faileds;
     }
 
-    protected addToMissingKey(lng: string, ns: string, key: string, pos: [string, number, number]) {
-        const p = [lng, ns, key, pos[0]];
-        let arr: [number, number][] = _.get(this.missingKeys, p);
+    protected static addToMissingKey(missingKeys: CollectedKeys, lng: string, ns: string, key: string, [filename, line, column]: [string, number | null, number | null]) {
+        const p = [lng, ns, key, filename];
+        let arr: [number, number][] = _.get(missingKeys, p);
         if (arr === undefined) {
-            _.set(this.missingKeys, p, []);
-            arr = _.get(this.missingKeys, p);
+            _.set(missingKeys, p, []);
+            arr = _.get(missingKeys, p);
         }
-        arr.push([pos[1], pos[2]]);
+        arr.push([line!, column!]);
     }
 
     protected onKeyMissing() {
         return false;
-    }
-
-    protected warningOnCompilation(msg: string) {
-        if (this.compilation) {
-            this.compilation.warnings.push(msg);
-        }
     }
 }
