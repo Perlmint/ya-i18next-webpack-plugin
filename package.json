@@ -1,6 +1,6 @@
 {
   "name": "ya-i18next-webpack-plugin",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "",
   "main": "index.js",
   "typings": "index.d.ts",
